@@ -11,9 +11,12 @@ var OIDCStrategy 			= require('passport-azure-ad').OIDCStrategy;
 var session 				= require('express-session');
 var uuid 					= require('uuid');
 var MicrosoftGraph 			= require("@microsoft/microsoft-graph-client");
+var rxjs          			= require('rxjs');
 // Include other JS files to implement abstraction
 var configs					= require('./conf');
 var privateconfig			= require('./appconf');
+var Queue					= require('./queue');
+var Node          			= require('./Node');
 
 // Start up configurations
 // 
@@ -61,8 +64,19 @@ app.use(session({
 }));
 
 // MS graph client
-var client 	= null;
-var port 	= process.env.PORT || 8080;        // set our port
+var MSClient 	= null;
+var folderQueue = null;
+var fileQueue 	= null;
+// A hot keyword - Folder to detect if any of the elements received in the array is a folder or not
+const FOLDER  = 'folder';
+const FILE    = 'file';
+const PICTURE = 'picture';
+
+// declare subscriptions
+this.fileSubscription 	= null;
+this.folderSubscription = null;
+
+var port 		= process.env.PORT || 8080;        // set our port
 
 // =============================================================================
 
@@ -97,6 +111,44 @@ router.get('/', function(req, res) {
 
 // =============================================================================
 // 
+// An image subscriber that retrieves image nodes from the observable
+var fileSubscriber = new rxjs.Subscriber(value =>  {
+	this.nextImageNode = value;
+	console.log('Next Image in series received with ID : ' + this.nextImageNode.data['id']);
+
+    // Extract the image resource URL and display on the frame
+    if (this.nextImageNode.data && this.nextImageNode.data['images']
+    	&& this.nextImageNode.data['images'].length > 0
+    	&& this.nextImageNode.data['images'][0].source) {
+    	this.onedriveImageSource = this.nextImageNode.data['images'][0].source;
+}
+},
+e => console.error(e),
+() => console.log('complete called'));
+
+// A folder subscriber that retrieves foler nodes from the observable
+var folderSubscriber = new rxjs.Subscriber(
+	value =>  {
+		nextFolderNode = value;
+		console.log('Next Folder in series received with ID : ' + nextFolderNode.data['id']);
+
+        // Retrieve the files in the folder popped
+        MSClient
+        .api('me/drive/items/' + nextFolderNode.data.id + '/children')
+        .get()
+        .then((res)=> {
+				// Pass on the received data to the queue creation method
+				createQueues(res.value);
+				folderSubscriber.next(folderQueue.pop());
+			}).catch((err) => {
+				console.log(err);
+			});
+		},
+		e => console.error(e),
+		() => console.log('complete called'));
+
+// =============================================================================
+// 
 // The login API. User is redirect here automatically if anyone arrives on '/'.
 // This page is responsible for rendering the login page
 router.get('/login', function(req, res){
@@ -111,18 +163,21 @@ router.get('/login', function(req, res){
 // attempt.
 router.get('/token',
 	passport.authenticate('azuread-openidconnect', { failureRedirect: '/api' }),
-	(req, response) => {
+	(req, res) => {
 		// Login successful. Setup MS graph 
-		client = MicrosoftGraph.Client.init({
+		MSClient = MicrosoftGraph.Client.init({
 			authProvider: (done) => {
         		done(null, req.user.accessToken); //first parameter takes an error if you can't get an access token
         	}
         });
 
-		// 
+		// Let the user know the browser may be shut down
 		res.json({
 			'message': "Login successful. You may close this window."
 		});
+
+		// Transfer call to another function to handle file fetching
+		getOneDrive();
 	});
 
 // ============================================================================= //
@@ -135,6 +190,42 @@ router.get('/executeLogin',
 		res.redirect('/api');
 	});
 
+// ============================================================================= //
+// 
+// The function that recursively iterates the one drive root folder and fetches all 
+// the files in it
+
+function getOneDrive() {
+	// Instantiate the queue
+	folderQueue = new Queue();
+	fileQueue  	= new Queue();
+
+	// Setup an observer for the queue
+	this.fileSubscription 	= fileQueue.observable.subscribe(fileSubscriber);
+	this.folderSubscription = folderQueue.observable.subscribe(folderSubscriber);
+
+	// First get the root folder of onedrive
+	MSClient
+	.api('/me/drive/root/children')
+	.get()
+	.then((res)=> {
+		createQueues(res.value);
+	}).catch((err) => {
+		console.log(err);
+	});
+}
+
+function createQueues(elements) {
+	for (const element of elements) {
+		if (element[FOLDER]) {
+			folderQueue.add(element);
+		} else if (element[FILE] && element[PICTURE]) {
+			fileQueue.add(element);
+		} else {
+			// Leave out any other file that is not a picture or a folder
+		}
+	}
+}
 // ============================================================================= //
 
 // REGISTER OUR ROUTES -------------------------------
