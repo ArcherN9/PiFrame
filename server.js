@@ -5,13 +5,15 @@ var request 				= require('request');
 var nodeSchedule			= require('node-schedule');
 var bodyParser 				= require('body-parser');
 var path 					= require('path');
-var net 					= require('net');
+var NET 					= require('net');
 var passport 				= require('passport');
 var OIDCStrategy 			= require('passport-azure-ad').OIDCStrategy;
 var session 				= require('express-session');
 var uuid 					= require('uuid');
 var MicrosoftGraph 			= require("@microsoft/microsoft-graph-client");
 var rxjs          			= require('rxjs');
+var HTTPS 					= require('https');
+var FS 						= require('fs');
 // Include other JS files to implement abstraction
 var configs					= require('./conf');
 var privateconfig			= require('./appconf');
@@ -68,9 +70,9 @@ var MSClient 	= null;
 var folderQueue = null;
 var fileQueue 	= null;
 // A hot keyword - Folder to detect if any of the elements received in the array is a folder or not
-const FOLDER  = 'folder';
-const FILE    = 'file';
-const PICTURE = 'picture';
+const FOLDER  	= 'folder';
+const FILE    	= 'file';
+const IMAGE 	= 'image';
 
 // declare subscriptions
 this.fileSubscription 	= null;
@@ -94,37 +96,42 @@ router.get('/', function(req, res) {
 
 	//Console output
 	console.log(new Date() + " : " + "PiFrame API is working normally.");
-
-	// const client = net.createConnection({ port: 4444 }, () => {
-	// 	//'connect' listener
-	// 	console.log('connected to server!');
-	// 	client.write('world!\r\n');
-	// });
-	// client.on('data', (data) => {
-	// 	console.log(data.toString());
-	// 	client.end();
-	// });
-	// client.on('end', () => {
-	// 	console.log('disconnected from server');
-	// });
 });
 
 // =============================================================================
 // 
 // An image subscriber that retrieves image nodes from the observable
-var fileSubscriber = new rxjs.Subscriber(value =>  {
-	this.nextImageNode = value;
-	console.log('Next Image in series received with ID : ' + this.nextImageNode.data['id']);
+var fileSubscriber = new rxjs.Subscriber(
+	value =>  {
+		var nextImageNode = value;
+		console.log('Next Image in series received with ID : ' + nextImageNode.data['id'] + ' & name ' + nextImageNode.data['name']);
 
-    // Extract the image resource URL and display on the frame
-    if (this.nextImageNode.data && this.nextImageNode.data['images']
-    	&& this.nextImageNode.data['images'].length > 0
-    	&& this.nextImageNode.data['images'][0].source) {
-    	this.onedriveImageSource = this.nextImageNode.data['images'][0].source;
-}
-},
-e => console.error(e),
-() => console.log('complete called'));
+		var file = FS.createWriteStream(nextImageNode.data['name']);
+		var request = HTTPS.get(nextImageNode.data['@microsoft.graph.downloadUrl'], function(response) {
+			
+			// Pipe the file to FS
+			response.pipe(file);
+
+			const client = NET.createConnection({ port: privateconfig.LUA_PORT }, () => {
+				//'connect' listener
+				console.log('Succesfully established connection to Info beamer.');
+
+				// Send file name to Info beamer followed by \r\n. Sending the line end is important
+				client.write(nextImageNode.data['name'] + '\r\n');
+			});
+			
+			client.on('data', (data) => {
+				console.log(data.toString());
+				client.end();
+			});
+			
+			client.on('end', () => {
+				console.log('disconnected from server');
+			});
+		});
+	},
+	e => console.error(e),
+	() => console.log('complete called'));
 
 // A folder subscriber that retrieves foler nodes from the observable
 var folderSubscriber = new rxjs.Subscriber(
@@ -144,8 +151,8 @@ var folderSubscriber = new rxjs.Subscriber(
 				console.log(err);
 			});
 		},
-		e => console.error(e),
-		() => console.log('complete called'));
+	e => console.error(e),
+	() => console.log('complete called'));
 
 // =============================================================================
 // 
@@ -219,7 +226,7 @@ function createQueues(elements) {
 	for (const element of elements) {
 		if (element[FOLDER]) {
 			folderQueue.add(element);
-		} else if (element[FILE] && element[PICTURE]) {
+		} else if (element[FILE] && element[IMAGE]) {
 			fileQueue.add(element);
 		} else {
 			// Leave out any other file that is not a picture or a folder
