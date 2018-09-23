@@ -14,6 +14,7 @@ var MicrosoftGraph 			= require("@microsoft/microsoft-graph-client");
 var rxjs          			= require('rxjs');
 var HTTPS 					= require('https');
 var FS 						= require('fs');
+var sharp 					= require('sharp');
 // Include other JS files to implement abstraction
 var configs					= require('./conf');
 var privateconfig			= require('./appconf');
@@ -30,6 +31,7 @@ const callback = (iss, sub, profile, accessToken, refreshToken, done) => {
 		refreshToken
 	});
 };
+
 // Configure passport library
 passport.use(new OIDCStrategy(configs, callback));
 const users 		= {};
@@ -112,12 +114,25 @@ var fileSubscriber = new rxjs.Subscriber(
 			// Pipe the file to FS
 			response.pipe(file);
 
+			file.on('finish', function() {
+				file.close();  // close() is async, call cb after close completes.
+				sharp(nextImageNode.data['name'])
+				    .resize(2048)
+				    .toBuffer()
+				    .then( data => {
+				        FS.writeFileSync('1-' + nextImageNode.data['name'], data);
+				    })
+				    .catch( err => {
+				        console.log(err);
+				    });		
+		    });
+
 			const client = NET.createConnection({ port: privateconfig.LUA_PORT }, () => {
 				//'connect' listener
 				console.log('Succesfully established connection to Info beamer.');
 
 				// Send file name to Info beamer followed by \r\n. Sending the line end is important
-				client.write(nextImageNode.data['name'] + '\r\n');
+				client.write('1-' + nextImageNode.data['name'] + '\r\n');
 			});
 			
 			client.on('data', (data) => {
